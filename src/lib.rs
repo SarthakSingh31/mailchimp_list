@@ -3,13 +3,6 @@ mod session;
 use session::Session;
 use worker::{Request, Response};
 
-#[derive(serde::Deserialize)]
-pub struct Campaign {
-    pub id: String,
-    pub title: String,
-    pub members: Vec<String>,
-}
-
 #[worker::event(fetch)]
 async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::Result<Response> {
     #[cfg(feature = "console_error_panic_hook")]
@@ -87,9 +80,7 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
 
             let session = Session::try_from(&ctx.env)?;
 
-            session.sync(&session_id).await?;
-
-            Response::ok("Synced")
+            session.sync(&session_id).await
         })
         .run(req, env)
         .await

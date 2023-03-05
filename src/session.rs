@@ -234,22 +234,20 @@ impl Session {
 
         let user = self.get_user(user_id).await?;
         let since_create_time = user.last_synced.map(|t| {
-            (
-                "since_create_time",
-                time::OffsetDateTime::from_unix_timestamp(t)
-                    .expect("Failed to convert timestamp to time")
-                    .format(&time::format_description::well_known::Iso8601::DEFAULT)
-                    .expect("Failed to format timestamp"),
-            )
+            time::OffsetDateTime::from_unix_timestamp(t)
+                .expect("Failed to convert timestamp to time")
+                .format(&time::format_description::well_known::Iso8601::DEFAULT)
+                .expect("Failed to format timestamp")
         });
-        let since_create_time = since_create_time.as_ref().map(|(k, v)| (*k, v.as_str()));
 
         let token = self.access_token(session_id).await?;
 
-        #[derive(serde::Deserialize)]
+        #[derive(Debug, serde::Deserialize)]
         struct DbCampaign {
             #[serde(rename = "Id")]
             id: String,
+            #[serde(rename = "Title")]
+            title: String,
             #[serde(rename = "MemberListId")]
             member_list_id: String,
             #[serde(skip_deserializing)]
@@ -258,7 +256,7 @@ impl Session {
         let mut db_campaigns: Vec<DbCampaign> = self
             .db
             .prepare(format!(
-                "SELECT Id, MemberListId FROM Campaigns WHERE UserId = {};",
+                "SELECT Id, Title, MemberListId FROM Campaigns WHERE UserId = {};",
                 user_id
             ))
             .bind(&[])?
@@ -279,24 +277,24 @@ impl Session {
             .await?;
 
         let new_mc_campagins = {
-            #[derive(serde::Deserialize)]
+            #[derive(Debug, serde::Deserialize)]
             struct MailChimpRecipients {
                 list_id: String,
             }
 
-            #[derive(serde::Deserialize)]
+            #[derive(Debug, serde::Deserialize)]
             struct MailChimpSettings {
                 title: String,
             }
 
-            #[derive(serde::Deserialize)]
+            #[derive(Debug, serde::Deserialize)]
             struct MailChimpCampaign {
                 id: String,
                 recipients: MailChimpRecipients,
                 settings: MailChimpSettings,
             }
 
-            #[derive(serde::Deserialize)]
+            #[derive(Debug, serde::Deserialize)]
             struct MailChimpCampaigns {
                 campaigns: Vec<MailChimpCampaign>,
                 total_items: usize,
@@ -308,13 +306,17 @@ impl Session {
                 let resp = token
                     .fetch(
                         "campaigns",
-                        since_create_time.clone().into_iter().chain(
-                            [
-                                ("count", "1000"),
-                                ("offset", campaigns.len().to_string().as_str()),
-                            ]
-                            .into_iter(),
-                        ),
+                        since_create_time
+                            .as_ref()
+                            .map(|t| ("since_create_time", t.as_str()))
+                            .into_iter()
+                            .chain(
+                                [
+                                    ("count", "1000"),
+                                    ("offset", campaigns.len().to_string().as_str()),
+                                ]
+                                .into_iter(),
+                            ),
                     )
                     .await?
                     .json::<MailChimpCampaigns>()
@@ -340,32 +342,42 @@ impl Session {
 
             db_campaigns.push(DbCampaign {
                 id: mc_campaign.id,
+                title: mc_campaign.settings.title,
                 member_list_id: mc_campaign.recipients.list_id,
                 new: true,
             });
         }
 
-        self.db
-            .exec(
-                format!(
-                    "INSERT INTO Campaigns VALUES {};",
-                    mc_campaign_insert.join(",")
+        if mc_campaign_insert.len() > 0 {
+            self.db
+                .exec(
+                    format!(
+                        "INSERT INTO Campaigns VALUES {};",
+                        mc_campaign_insert.join(",")
+                    )
+                    .as_str(),
                 )
-                .as_str(),
-            )
-            .await?;
+                .await?;
+        }
 
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        struct Member {
+            email_address: String,
+            full_name: String,
+        }
+
+        #[derive(serde::Serialize)]
+        struct NewCampaignData {
+            title: String,
+            new_members: Vec<Member>,
+        }
+
+        let mut new_campaign_data = Vec::new();
         let mut new_members_insert = Vec::new();
 
-        for db_campaign in db_campaigns {
+        for db_campaign in &db_campaigns {
             let new_members = {
-                #[derive(serde::Deserialize)]
-                struct Member {
-                    email_address: String,
-                    full_name: String,
-                }
-
-                #[derive(serde::Deserialize)]
+                #[derive(Debug, serde::Deserialize)]
                 struct Members {
                     members: Vec<Member>,
                     total_items: usize,
@@ -374,7 +386,9 @@ impl Session {
                 let params = if db_campaign.new {
                     None
                 } else {
-                    since_create_time.clone()
+                    since_create_time
+                        .as_ref()
+                        .map(|t| ("since_last_changed", t.as_str()))
                 };
 
                 let mut members = Vec::new();
@@ -406,25 +420,32 @@ impl Session {
                 members
             };
 
-            for member in new_members {
+            for member in &new_members {
                 new_members_insert.push(format!(
                     "('{}', '{}', '{}')",
                     member.email_address, member.full_name, db_campaign.id
                 ));
             }
+
+            new_campaign_data.push(NewCampaignData {
+                title: db_campaign.title.clone(),
+                new_members,
+            });
         }
 
-        self.db
-            .exec(
-                format!(
-                    "INSERT INTO Members VALUES {};",
-                    new_members_insert.join(",")
+        if new_members_insert.len() > 0 {
+            self.db
+                .exec(
+                    format!(
+                        "INSERT INTO Members VALUES {};",
+                        new_members_insert.join(",")
+                    )
+                    .as_str(),
                 )
-                .as_str(),
-            )
-            .await?;
+                .await?;
+        }
 
-        Response::ok("Synced")
+        Response::from_json(&new_campaign_data)
     }
 
     async fn get_user(&self, user_id: impl std::fmt::Display) -> worker::Result<User> {
@@ -437,40 +458,6 @@ impl Session {
             "Failed to find user for user_id".into(),
         ))
     }
-
-    // pub async fn sync(&self, code: &str, campaigns: Vec<Campaign>) -> worker::Result<()> {
-    //     // clean up the old campaign records
-    //     self.db
-    //         .prepare("DELETE FROM Campaigns WHERE UserCode = ?;")
-    //         .bind(&[code.into()])?
-    //         .all()
-    //         .await?;
-
-    //     for campaign in campaigns {
-    //         self.db
-    //             .prepare("INSERT INTO Campaigns VALUES (?, ?, ?);")
-    //             .bind(&[
-    //                 campaign.id.as_str().into(),
-    //                 campaign.title.into(),
-    //                 code.into(),
-    //             ])?
-    //             .all()
-    //             .await?;
-
-    //         let member_list = campaign
-    //             .members
-    //             .into_iter()
-    //             .map(|email| format!("('{email}', '{}')", campaign.id))
-    //             .collect::<Vec<_>>()
-    //             .join(",");
-
-    //         self.db
-    //             .exec(format!("INSERT INTO Members VALUES {member_list};").as_str())
-    //             .await?;
-    //     }
-
-    //     Ok(())
-    // }
 
     fn client_id_from_env(env: &Env) -> String {
         env.secret("MAILCHIMP_CLIENT_ID")
