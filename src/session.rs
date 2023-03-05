@@ -242,6 +242,7 @@ impl Session {
                     .expect("Failed to format timestamp"),
             )
         });
+        let since_create_time = since_create_time.as_ref().map(|(k, v)| (*k, v.as_str()));
 
         let token = self.access_token(session_id).await?;
 
@@ -298,10 +299,35 @@ impl Session {
             #[derive(serde::Deserialize)]
             struct MailChimpCampaigns {
                 campaigns: Vec<MailChimpCampaign>,
+                total_items: usize,
             }
 
-            let mut resp = token.fetch("campaigns", since_create_time.clone()).await?;
-            resp.json::<MailChimpCampaigns>().await?.campaigns
+            let mut campaigns = Vec::new();
+
+            loop {
+                let resp = token
+                    .fetch(
+                        "campaigns",
+                        since_create_time.clone().into_iter().chain(
+                            [
+                                ("count", "1000"),
+                                ("offset", campaigns.len().to_string().as_str()),
+                            ]
+                            .into_iter(),
+                        ),
+                    )
+                    .await?
+                    .json::<MailChimpCampaigns>()
+                    .await?;
+
+                campaigns.extend(resp.campaigns);
+
+                if campaigns.len() == resp.total_items {
+                    break;
+                }
+            }
+
+            campaigns
         };
 
         let mut mc_campaign_insert = Vec::default();
@@ -342,6 +368,7 @@ impl Session {
                 #[derive(serde::Deserialize)]
                 struct Members {
                     members: Vec<Member>,
+                    total_items: usize,
                 }
 
                 let params = if db_campaign.new {
@@ -350,15 +377,33 @@ impl Session {
                     since_create_time.clone()
                 };
 
-                token
-                    .fetch(
-                        format!("lists/{}/members", db_campaign.member_list_id).as_str(),
-                        params,
-                    )
-                    .await?
-                    .json::<Members>()
-                    .await?
-                    .members
+                let mut members = Vec::new();
+                let endpoint = format!("lists/{}/members", db_campaign.member_list_id);
+
+                loop {
+                    let resp = token
+                        .fetch(
+                            &endpoint,
+                            params.into_iter().chain(
+                                [
+                                    ("count", "1000"),
+                                    ("offset", members.len().to_string().as_str()),
+                                ]
+                                .into_iter(),
+                            ),
+                        )
+                        .await?
+                        .json::<Members>()
+                        .await?;
+
+                    members.extend(resp.members);
+
+                    if members.len() == resp.total_items {
+                        break;
+                    }
+                }
+
+                members
             };
 
             for member in new_members {
