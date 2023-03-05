@@ -1,0 +1,20 @@
+name = "mailchimplist"
+main = "build/worker/shim.mjs"
+compatibility_date = "2022-01-20"
+
+[vars]
+WORKERS_RS_VERSION = "0.0.13"
+
+[build]
+command = "cargo install -q worker-build --version 0.0.9 && worker-build --release"
+
+[[d1_databases]]
+binding = "MailchimpDB"
+database_name = "Mailchimp"
+database_id = "71a35df3-eb84-4bec-abbf-49e74863d999"
+
+
+# Needs secrets
+# MAILCHIMP_CLIENT_ID - client id for the mailchimp app
+# MAILCHIMP_CLIENT_SECRET - client secret for the mailchimp app
+# MAILCHIMP_BASE_URI - the base url of the app. should be ended with /

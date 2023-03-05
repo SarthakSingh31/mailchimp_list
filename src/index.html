@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>Mailchimp list</title>
+    </head>
+    <body>
+        <div id="campaigns">
+        </div>
+        <button id="sync">Sync</button>
+        <script>
+            const LOGIN_URL = "{LOGIN_URL}";
+            const CAMPAIGNS = document.getElementById("campaigns");
+            const MEMBER_DATA = [];
+
+            if (localStorage.getItem("session-id") == null) {
+                window.location.replace(LOGIN_URL);
+            } else {
+                fetch(`/validate_session?session_id=${localStorage.getItem("session-id")}`)
+                    .then((resp) => {
+                        if (resp.status < 400) {
+                            fetch("/get_campaigns", { headers: { "session-id": localStorage.getItem("session-id") } })
+                                .then((resp) => resp.json())
+                                .then((data) => {
+                                    data.campaigns.forEach(campaign => {
+                                        let c_elm = document.createElement("div");
+
+                                        let c_inner_elm = document.createElement("span");
+                                        c_inner_elm.innerText = campaign.settings.title;
+                                        c_elm.append(c_inner_elm);
+
+                                        let ul_elm = document.createElement("ul");
+                                        c_elm.append(ul_elm);
+
+                                        let c_data = { id: campaign.id, title: campaign.settings.title, members: [] };
+
+                                        fetch(
+                                            `/get_members/${campaign.recipients.list_id}`,
+                                            { headers: { "session-id": localStorage.getItem("session-id") } },
+                                        )
+                                        .then((resp) => resp.json())
+                                        .then((data) => {
+                                            data.members.forEach(member => {
+                                                let m_elm = document.createElement("li");
+                                                m_elm.innerText = member.email_address;
+                                    
+                                                ul_elm.append(m_elm);
+                                                c_data.members.push(member.email_address);
+                                            });
+                                        });
+                                        
+                                        CAMPAIGNS.append(c_elm);
+                                        MEMBER_DATA.push(c_data);
+                                    });
+                                });
+                        } else {
+                            window.location.replace(LOGIN_URL);
+                        }
+                    });
+
+
+
+                document.getElementById("sync").onclick = (evt) => {
+                    fetch("/sync", {
+                        method: "POST",
+                        headers: { "session-id": localStorage.getItem("session-id") },
+                        body: JSON.stringify(MEMBER_DATA),
+                    });
+                };
+            }
+        </script>
+    </body>
+</html>
