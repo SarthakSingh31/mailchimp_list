@@ -333,19 +333,19 @@ impl Session {
             .get_or_add_merge_field(&token, &format!("Video/{}", campaign.id))
             .await?;
 
-        for member in list
+        let values = list
             .fetch_members(&token, Option::<&str>::None)
             .await?
             .members
-        {
-            list.set_member_merge_field(
-                &token,
-                &merge_field.tag,
-                member.email_address,
-                "https://vimeo.com/226053498",
-            )
-            .await?;
-        }
+            .into_iter()
+            .map(|member| {
+                (
+                    &merge_field.tag,
+                    member.email_address,
+                    "https://vimeo.com/226053498",
+                )
+            });
+        list.set_member_merge_field_batch(&token, values).await?;
 
         Response::from_json(&serde_json::json!({
             "tag": merge_field.tag,

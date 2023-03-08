@@ -1,3 +1,4 @@
+use serde_json::Value;
 use worker::Method;
 
 use super::Token;
@@ -108,30 +109,41 @@ impl List {
             .await
     }
 
-    pub async fn set_member_merge_field(
+    pub async fn set_member_merge_field_batch(
         &self,
         token: &Token,
-        field_name: impl AsRef<str>,
-        member_email_id: impl AsRef<str>,
-        value: impl AsRef<str>,
+        values: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>, impl AsRef<str>)>,
     ) -> worker::Result<()> {
-        let body = serde_json::json!({
-            "merge_fields": {
-                field_name.as_ref(): value.as_ref()
-            },
-        })
-        .to_string();
+        let mut operations = Vec::default();
 
-        let resp = token
+        for (field_tag, member_email_id, value) in values {
+            let uri = format!("lists/{}/members/{}", self.0, member_email_id.as_ref());
+            let body = serde_json::json!({
+                "merge_fields": {
+                    field_tag.as_ref(): value.as_ref()
+                },
+            });
+
+            operations.push(serde_json::json!({
+                "method": "PATCH",
+                "path": uri,
+                "params": {},
+                "body": body.to_string()
+            }));
+        }
+
+        let operations = serde_json::json!({
+            "operations": Value::Array(operations),
+        });
+
+        token
             .fetch(
-                format!("lists/{}/members/{}", self.0, member_email_id.as_ref()).as_str(),
+                "batches",
                 [],
-                Method::Patch,
-                Some(body.into()),
+                Method::Post,
+                Some(operations.to_string().into()),
             )
             .await?;
-
-        assert!(resp.status_code() < 300);
 
         Ok(())
     }
