@@ -330,7 +330,7 @@ impl Session {
 
         let list = List(campaign.recipients.list_id);
         let merge_field = list
-            .add_merge_field(&token, &format!("Video/{}", campaign.id))
+            .get_or_add_merge_field(&token, &format!("Video/{}", campaign.id))
             .await?;
 
         for member in list
@@ -342,7 +342,7 @@ impl Session {
                 &token,
                 &merge_field.tag,
                 member.email_address,
-                "https://player.vimeo.com/video/226053498",
+                "https://vimeo.com/226053498",
             )
             .await?;
         }

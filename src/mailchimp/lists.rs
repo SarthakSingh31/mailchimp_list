@@ -61,11 +61,32 @@ impl List {
         Ok(members)
     }
 
-    pub async fn add_merge_field(
+    pub async fn get_or_add_merge_field(
         &self,
         token: &Token,
         name: impl AsRef<str>,
     ) -> worker::Result<MergeField> {
+        #[derive(Debug, serde::Deserialize)]
+        struct MergeFields {
+            merge_fields: Vec<MergeField>,
+        }
+
+        let fields = token
+            .fetch(
+                format!("lists/{}/merge-fields", self.0).as_str(),
+                [],
+                Method::Get,
+                None,
+            )
+            .await?
+            .json::<MergeFields>()
+            .await?
+            .merge_fields;
+
+        if let Some(field) = fields.into_iter().find(|field| field.name == name.as_ref()) {
+            return Ok(field);
+        }
+
         let body = serde_json::json!({
             "name": name.as_ref(),
             "type": "url",
@@ -119,4 +140,5 @@ impl List {
 #[derive(Debug, serde::Deserialize)]
 pub struct MergeField {
     pub tag: String,
+    pub name: String,
 }
