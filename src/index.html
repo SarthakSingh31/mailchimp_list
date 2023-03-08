@@ -8,9 +8,10 @@
         <button id="sync">Sync</button>
         <div id="campaigns">
         </div>
+        <ul id="add-videos">
+        </ul>
         <script>
             const LOGIN_URL = "{LOGIN_URL}";
-            const CAMPAIGNS = document.getElementById("campaigns");
 
             if (localStorage.getItem("session-id") == null) {
                 window.location.replace(LOGIN_URL);
@@ -21,6 +22,46 @@
                             window.location.replace(LOGIN_URL);
                         }
                     });
+
+                const ADD_VIDEOS = document.getElementById("add-videos");
+
+                fetch("/campaigns", {
+                    headers: { "session-id": localStorage.getItem("session-id") },
+                })
+                .then((resp) => resp.json())
+                .then((campaigns) => {
+                    campaigns.campaigns.forEach((campaign) => {
+                        let c_elm = document.createElement("li");
+
+                        let span_elm = document.createElement("span");
+                        span_elm.innerText = campaign.settings.title;
+                        c_elm.appendChild(span_elm);
+
+                        let tag_elm = document.createElement("span");
+
+                        let add_btn = document.createElement("button");
+                        add_btn.innerText = "Add";
+                        add_btn.onclick = (evt) => {
+                            evt.preventDefault();
+
+                            fetch(`/populate_merge_fields/${campaign.id}`, {
+                                method: "POST",
+                                headers: { "session-id": localStorage.getItem("session-id") },
+                            })
+                            .then((resp) => resp.json())
+                            .then((data) => {
+                                tag_elm.innerText = `Please use merge field tag "*|${data.tag}|*" to embed the video`;
+                            });
+                        };
+                        c_elm.appendChild(add_btn);
+
+                        c_elm.appendChild(tag_elm);
+
+                        ADD_VIDEOS.appendChild(c_elm);
+                    });
+                });
+
+                const CAMPAIGNS = document.getElementById("campaigns");
 
                 document.getElementById("sync").onclick = (evt) => {
                     CAMPAIGNS.innerHTML = '';

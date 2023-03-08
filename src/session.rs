@@ -1,5 +1,11 @@
 use worker::{wasm_bindgen::JsValue, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
+use crate::mailchimp::{
+    campaign::{MailChimpCampaign, MailChimpCampaigns},
+    lists::{List, Member},
+    Token,
+};
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct User {
     #[serde(rename = "Id")]
@@ -10,55 +16,6 @@ pub struct User {
     pub email: String,
     #[serde(rename = "LastSynced")]
     pub last_synced: Option<i64>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct Token {
-    #[serde(rename = "AccessToken")]
-    access_token: String,
-    #[serde(rename = "Dc")]
-    dc: String,
-}
-
-impl Token {
-    const API_URL: &'static str = "https://<dc>.api.mailchimp.com/3.0/";
-
-    fn endpoint(&self, uri: &str) -> url::Url {
-        Self::API_URL
-            .replace("<dc>", &self.dc)
-            .parse::<url::Url>()
-            .expect("Failed to parse api url")
-            .join(uri)
-            .expect("Failed to build endpoint url")
-    }
-
-    pub async fn fetch<K: AsRef<str>, V: AsRef<str>>(
-        &self,
-        uri: &str,
-        params: impl IntoIterator<Item = (K, V)>,
-    ) -> worker::Result<worker::Response> {
-        let mut headers = Headers::default();
-        headers.append(
-            "Authorization",
-            format!("Bearer {}", self.access_token).as_str(),
-        )?;
-
-        let init = RequestInit {
-            headers,
-            ..Default::default()
-        };
-        let mut uri = self.endpoint(uri);
-        {
-            let mut query_params = uri.query_pairs_mut();
-            for (key, value) in params {
-                query_params.append_pair(key.as_ref(), value.as_ref());
-            }
-        }
-
-        Fetch::Request(Request::new_with_init(uri.as_str(), &init)?)
-            .send()
-            .await
-    }
 }
 
 pub struct Session {
@@ -233,7 +190,7 @@ impl Session {
         };
 
         let user = self.get_user(user_id).await?;
-        let since_create_time = user.last_synced.map(|t| {
+        let last_synced = user.last_synced.map(|t| {
             time::OffsetDateTime::from_unix_timestamp(t)
                 .expect("Failed to convert timestamp to time")
                 .format(&time::format_description::well_known::Iso8601::DEFAULT)
@@ -276,76 +233,30 @@ impl Session {
             )
             .await?;
 
-        let new_mc_campagins = {
-            #[derive(Debug, serde::Deserialize)]
-            struct MailChimpRecipients {
-                list_id: String,
-            }
-
-            #[derive(Debug, serde::Deserialize)]
-            struct MailChimpSettings {
-                title: String,
-            }
-
-            #[derive(Debug, serde::Deserialize)]
-            struct MailChimpCampaign {
-                id: String,
-                recipients: MailChimpRecipients,
-                settings: MailChimpSettings,
-            }
-
-            #[derive(Debug, serde::Deserialize)]
-            struct MailChimpCampaigns {
-                campaigns: Vec<MailChimpCampaign>,
-                total_items: usize,
-            }
-
-            let mut campaigns = Vec::new();
-
-            loop {
-                let resp = token
-                    .fetch(
-                        "campaigns",
-                        since_create_time
-                            .as_ref()
-                            .map(|t| ("since_create_time", t.as_str()))
-                            .into_iter()
-                            .chain(
-                                [
-                                    ("count", "1000"),
-                                    ("offset", campaigns.len().to_string().as_str()),
-                                ]
-                                .into_iter(),
-                            ),
-                    )
-                    .await?
-                    .json::<MailChimpCampaigns>()
-                    .await?;
-
-                campaigns.extend(resp.campaigns);
-
-                if campaigns.len() == resp.total_items {
-                    break;
-                }
-            }
-
-            campaigns
-        };
+        let new_mc_campagins = MailChimpCampaigns::get_all(&token, last_synced.as_ref())
+            .await?
+            .campaigns;
 
         let mut mc_campaign_insert = Vec::default();
 
         for mc_campaign in new_mc_campagins {
-            mc_campaign_insert.push(format!(
-                "('{}', '{}', '{}', {})",
-                mc_campaign.id, mc_campaign.settings.title, mc_campaign.recipients.list_id, user_id,
-            ));
+            // TODO: Instead of ignoring this raise an error in the front end
+            if !mc_campaign.recipients.list_id.is_empty() {
+                mc_campaign_insert.push(format!(
+                    "('{}', '{}', '{}', {})",
+                    mc_campaign.id,
+                    mc_campaign.settings.title,
+                    mc_campaign.recipients.list_id,
+                    user_id,
+                ));
 
-            db_campaigns.push(DbCampaign {
-                id: mc_campaign.id,
-                title: mc_campaign.settings.title,
-                member_list_id: mc_campaign.recipients.list_id,
-                new: true,
-            });
+                db_campaigns.push(DbCampaign {
+                    id: mc_campaign.id,
+                    title: mc_campaign.settings.title,
+                    member_list_id: mc_campaign.recipients.list_id,
+                    new: true,
+                });
+            }
         }
 
         if mc_campaign_insert.len() > 0 {
@@ -360,12 +271,6 @@ impl Session {
                 .await?;
         }
 
-        #[derive(Debug, serde::Serialize, serde::Deserialize)]
-        struct Member {
-            email_address: String,
-            full_name: String,
-        }
-
         #[derive(serde::Serialize)]
         struct NewCampaignData {
             title: String,
@@ -376,49 +281,15 @@ impl Session {
         let mut new_members_insert = Vec::new();
 
         for db_campaign in &db_campaigns {
-            let new_members = {
-                #[derive(Debug, serde::Deserialize)]
-                struct Members {
-                    members: Vec<Member>,
-                    total_items: usize,
-                }
-
-                let params = if db_campaign.new {
-                    None
-                } else {
-                    since_create_time
-                        .as_ref()
-                        .map(|t| ("since_last_changed", t.as_str()))
-                };
-
-                let mut members = Vec::new();
-                let endpoint = format!("lists/{}/members", db_campaign.member_list_id);
-
-                loop {
-                    let resp = token
-                        .fetch(
-                            &endpoint,
-                            params.into_iter().chain(
-                                [
-                                    ("count", "1000"),
-                                    ("offset", members.len().to_string().as_str()),
-                                ]
-                                .into_iter(),
-                            ),
-                        )
-                        .await?
-                        .json::<Members>()
-                        .await?;
-
-                    members.extend(resp.members);
-
-                    if members.len() == resp.total_items {
-                        break;
-                    }
-                }
-
-                members
+            let last_synced = if db_campaign.new {
+                None
+            } else {
+                last_synced.as_ref()
             };
+            let new_members = List(db_campaign.member_list_id.clone())
+                .fetch_members(&token, last_synced)
+                .await?
+                .members;
 
             for member in &new_members {
                 new_members_insert.push(format!(
@@ -446,6 +317,39 @@ impl Session {
         }
 
         Response::from_json(&new_campaign_data)
+    }
+
+    pub async fn populate_merge_fields(
+        &self,
+        session_id: impl Into<JsValue>,
+        campaign_id: &str,
+    ) -> worker::Result<Response> {
+        let token = self.access_token(session_id).await?;
+
+        let campaign = MailChimpCampaign::get(&token, campaign_id).await?;
+
+        let list = List(campaign.recipients.list_id);
+        let merge_field = list
+            .add_merge_field(&token, &format!("Video/{}", campaign.id))
+            .await?;
+
+        for member in list
+            .fetch_members(&token, Option::<&str>::None)
+            .await?
+            .members
+        {
+            list.set_member_merge_field(
+                &token,
+                &merge_field.tag,
+                member.email_address,
+                "https://player.vimeo.com/video/226053498",
+            )
+            .await?;
+        }
+
+        Response::from_json(&serde_json::json!({
+            "tag": merge_field.tag,
+        }))
     }
 
     async fn get_user(&self, user_id: impl std::fmt::Display) -> worker::Result<User> {

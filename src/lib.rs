@@ -1,7 +1,8 @@
+mod mailchimp;
 mod session;
 
 use session::Session;
-use worker::{Request, Response};
+use worker::{Method, Request, Response};
 
 #[worker::event(fetch)]
 async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::Result<Response> {
@@ -45,7 +46,7 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
                 Response::error("Missing code query param", 400)
             }
         })
-        .get_async("/get_campaigns", |req, ctx| async move {
+        .get_async("/lists", |req, ctx| async move {
             let session_id = req
                 .headers()
                 .get("session-id")?
@@ -54,7 +55,18 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
             let session = Session::try_from(&ctx.env)?;
             let token = session.access_token(session_id).await?;
 
-            token.fetch::<&str, &str>("campaigns", []).await
+            token.fetch("lists", [], Method::Get, None).await
+        })
+        .get_async("/campaigns", |req, ctx| async move {
+            let session_id = req
+                .headers()
+                .get("session-id")?
+                .expect("Each request must embed the auth code");
+
+            let session = Session::try_from(&ctx.env)?;
+            let token = session.access_token(session_id).await?;
+
+            token.fetch("campaigns", [], Method::Get, None).await
         })
         .get_async("/get_members/:list_id", |req, ctx| async move {
             let Some(list_id) = ctx.param("list_id") else {
@@ -69,7 +81,12 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
             let token = session.access_token(session_id).await?;
 
             token
-                .fetch::<&str, &str>(format!("lists/{list_id}/members").as_str(), [])
+                .fetch(
+                    format!("lists/{list_id}/members").as_str(),
+                    [],
+                    Method::Get,
+                    None,
+                )
                 .await
         })
         .post_async("/sync", |req, ctx| async move {
@@ -82,6 +99,24 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
 
             session.sync(&session_id).await
         })
+        .post_async(
+            "/populate_merge_fields/:campaign_id",
+            |req, ctx| async move {
+                let Some(campaign_id) = ctx.param("campaign_id") else {
+                return Response::error("Missing list id", 400);
+            };
+                let session_id = req
+                    .headers()
+                    .get("session-id")?
+                    .expect("Each request must embed the auth code");
+
+                let session = Session::try_from(&ctx.env)?;
+
+                session
+                    .populate_merge_fields(&session_id, campaign_id)
+                    .await
+            },
+        )
         .run(req, env)
         .await
 }
