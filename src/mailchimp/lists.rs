@@ -112,16 +112,21 @@ impl List {
     pub async fn set_member_merge_field_batch(
         &self,
         token: &Token,
-        values: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>, impl AsRef<str>)>,
+        values: impl IntoIterator<Item = (impl AsRef<str>, Vec<(impl AsRef<str>, impl AsRef<str>)>)>,
     ) -> worker::Result<()> {
         let mut operations = Vec::default();
 
-        for (field_tag, member_email_id, value) in values {
+        for (member_email_id, values) in values {
             let uri = format!("lists/{}/members/{}", self.0, member_email_id.as_ref());
+            let mut merge_fields = serde_json::Map::new();
+            for (key, value) in values {
+                merge_fields.insert(
+                    key.as_ref().to_string(),
+                    Value::String(value.as_ref().to_string()),
+                );
+            }
             let body = serde_json::json!({
-                "merge_fields": {
-                    field_tag.as_ref(): value.as_ref()
-                },
+                "merge_fields": Value::Object(merge_fields),
             });
 
             operations.push(serde_json::json!({

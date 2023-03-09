@@ -36,7 +36,8 @@ CREATE TABLE Campaigns(
     Title TEXT NOT NULL,
     ListId TEXT NOT NULL,
     UserId INTEGER NOT NULL,
-    MergeTag TEXT NOT NULL,
+    VideoTag TEXT NOT NULL,
+    ImageTag TEXT NOT NULL,
     FOREIGN KEY (ListId)
         REFERENCES Lists (Id)
             ON UPDATE CASCADE

@@ -84,11 +84,17 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
             let campaigns = campaigns
                 .into_iter()
                 .map(|campaign| {
+                    let merge_tags = existing_campaigns.get(&campaign.id).map(|tags| {
+                        serde_json::json!({
+                            "video_tag": tags.0,
+                            "image_tag": tags.1,
+                        })
+                    });
                     serde_json::json!({
                         "id": campaign.id,
                         "list_id": campaign.recipients.list_id,
                         "title": campaign.settings.title,
-                        "merge_tag": existing_campaigns.get(&campaign.id)
+                        "merge_tags": merge_tags
                     })
                 })
                 .collect::<Vec<_>>();

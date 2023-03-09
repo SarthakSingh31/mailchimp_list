@@ -34,7 +34,7 @@
                         span_elm.innerText = campaign.title;
                         c_elm.appendChild(span_elm);
 
-                        let tag_elm = document.createElement("span");
+                        let tag_elm = document.createElement("div");
 
                         let add_btn = document.createElement("button");
                         add_btn.innerText = "Add";
@@ -48,13 +48,25 @@
                             .then((resp) => resp.json())
                             .then((data) => {
                                 add_btn.disabled = true;
-                                tag_elm.innerText = `Please use merge field tag "*|${data.tag}|*" to embed the video`;
+
+                                let tag_span_elm = document.createElement("span");
+                                tag_span_elm.innerText = "Please embed the following html code to embed the link to the video:";
+                                tag_elm.appendChild(tag_span_elm);
+                                let tag_div_elm = document.createElement("div");
+                                tag_div_elm.innerText = `<a href="*|${data.video_tag}|*"><img src="*|${data.image_tag}|*"></a>`;
+                                tag_elm.appendChild(tag_div_elm);
                             });
                         };
                         
-                        if (campaign.merge_tag != null) {
+                        if (campaign.merge_tags != null) {
                             add_btn.disabled = true;
-                            tag_elm.innerText = `Please use merge field tag "*|${campaign.merge_tag}|*" to embed the video`;
+                            
+                            let tag_span_elm = document.createElement("span");
+                            tag_span_elm.innerText = "Please embed the following html code to embed the link to the video:";
+                            tag_elm.appendChild(tag_span_elm);
+                            let tag_div_elm = document.createElement("div");
+                            tag_div_elm.innerText = `<a href="*|${campaign.merge_tags.video_tag}|*"><img src="*|${campaign.merge_tags.image_tag}|*"></a>`;
+                            tag_elm.appendChild(tag_div_elm);
                         }
 
                         c_elm.appendChild(add_btn);

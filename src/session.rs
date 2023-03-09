@@ -193,13 +193,15 @@ impl Session {
     pub async fn get_existing_campaign_merge_fields_in(
         &self,
         campaigns: HashSet<String>,
-    ) -> worker::Result<HashMap<String, String>> {
+    ) -> worker::Result<HashMap<String, (String, String)>> {
         #[derive(serde::Deserialize)]
         struct DbCampaign {
             #[serde(rename = "Id")]
             id: String,
-            #[serde(rename = "MergeTag")]
-            merge_tag: String,
+            #[serde(rename = "VideoTag")]
+            video_tag: String,
+            #[serde(rename = "ImageTag")]
+            image_tag: String,
         }
 
         let campaigns = campaigns
@@ -211,7 +213,7 @@ impl Session {
         Ok(self
             .db
             .prepare(format!(
-                "SELECT Id, MergeTag FROM Campaigns WHERE Id in ({});",
+                "SELECT Id, VideoTag, ImageTag FROM Campaigns WHERE Id in ({});",
                 campaigns
             ))
             .bind(&[])?
@@ -219,7 +221,7 @@ impl Session {
             .await?
             .results::<DbCampaign>()?
             .into_iter()
-            .map(|campaign| (campaign.id, campaign.merge_tag))
+            .map(|campaign| (campaign.id, (campaign.video_tag, campaign.image_tag)))
             .collect())
     }
 
@@ -228,7 +230,8 @@ impl Session {
         &self,
         campaign: &MailChimpCampaign,
         session_id: impl Into<JsValue> + Copy,
-        merge_tag: impl Into<JsValue>,
+        video_tag: impl Into<JsValue>,
+        image_tag: impl Into<JsValue>,
     ) -> worker::Result<()> {
         #[derive(serde::Deserialize)]
         struct DbSession {
@@ -298,14 +301,15 @@ impl Session {
         // Populate the campaign table if it did not exist
         self.db
             .prepare(format!(
-                "INSERT INTO Campaigns VALUES (?, ?, ?, {}, ?);",
+                "INSERT INTO Campaigns VALUES (?, ?, ?, {}, ?, ?);",
                 session.user_id
             ))
             .bind(&[
                 campaign.id.as_str().into(),
                 campaign.settings.title.as_str().into(),
                 campaign.recipients.list_id.as_str().into(),
-                merge_tag.into(),
+                video_tag.into(),
+                image_tag.into(),
             ])?
             .all()
             .await?;
@@ -323,10 +327,13 @@ impl Session {
         let campaign = MailChimpCampaign::get(&token, campaign_id).await?;
         let list = List(campaign.recipients.list_id.clone());
 
-        let merge_field = list
+        let video_field = list
             .get_or_add_merge_field(&token, &format!("Video/{}", campaign.id))
             .await?;
-        self.add_campaign_to_table(&campaign, session_id, &merge_field.tag)
+        let image_field = list
+            .get_or_add_merge_field(&token, &format!("Image/{}", campaign.id))
+            .await?;
+        self.add_campaign_to_table(&campaign, session_id, &video_field.tag, &image_field.tag)
             .await?;
 
         let values = list
@@ -336,15 +343,18 @@ impl Session {
             .into_iter()
             .map(|member| {
                 (
-                    &merge_field.tag,
                     member.email_address,
-                    "https://vimeo.com/226053498",
+                    vec![
+                        (&video_field.tag, "https://vimeo.com/226053498"),
+                        (&image_field.tag, "https://s3.amazonaws.com/creare-websites-wpms-legacy/wp-content/uploads/sites/32/2016/03/01200959/canstockphoto22402523-arcos-creator.com_-1024x1024.jpg"),
+                    ],
                 )
             });
         list.set_member_merge_field_batch(&token, values).await?;
 
         Response::from_json(&serde_json::json!({
-            "tag": merge_field.tag,
+            "video_tag": video_field.tag,
+            "image_tag": image_field.tag,
         }))
     }
 
@@ -363,21 +373,31 @@ impl Session {
 
         #[derive(serde::Deserialize)]
         struct DbCampaign {
-            #[serde(rename = "MergeTag")]
-            merge_tag: String,
+            #[serde(rename = "VideoTag")]
+            video_tag: String,
+            #[serde(rename = "ImageTag")]
+            image_tag: String,
         }
 
         let list = List(list_id.to_owned());
 
         let values = self
             .db
-            .prepare("SELECT MergeTag FROM Campaigns WHERE ListId = ?;")
+            .prepare("SELECT VideoTag, ImageTag FROM Campaigns WHERE ListId = ?;")
             .bind(&[list_id.into()])?
             .all()
             .await?
             .results::<DbCampaign>()?
             .into_iter()
-            .map(|campaign| (campaign.merge_tag, email, "https://vimeo.com/226053498"));
+            .map(|campaign| {
+                (
+                    email,
+                    vec![
+                        (campaign.video_tag, "https://vimeo.com/226053498"),
+                        (campaign.image_tag, "https://s3.amazonaws.com/creare-websites-wpms-legacy/wp-content/uploads/sites/32/2016/03/01200959/canstockphoto22402523-arcos-creator.com_-1024x1024.jpg"),
+                    ],
+                )
+            });
 
         list.set_member_merge_field_batch(&token, values).await?;
 
@@ -413,8 +433,10 @@ impl Session {
 
         #[derive(serde::Deserialize)]
         struct DbCampaign {
-            #[serde(rename = "MergeTag")]
-            merge_tag: String,
+            #[serde(rename = "VideoTag")]
+            video_tag: String,
+            #[serde(rename = "ImageTag")]
+            image_tag: String,
         }
 
         if member.name != name {
@@ -426,13 +448,21 @@ impl Session {
 
             let values = self
                 .db
-                .prepare("SELECT MergeTag FROM Campaigns WHERE ListId = ?;")
+                .prepare("SELECT VideoTag, ImageTag FROM Campaigns WHERE ListId = ?;")
                 .bind(&[list_id.into()])?
                 .all()
                 .await?
                 .results::<DbCampaign>()?
                 .into_iter()
-                .map(|campaign| (campaign.merge_tag, email, "https://vimeo.com/226053498"));
+                .map(|campaign| {
+                    (
+                        email,
+                        vec![
+                            (campaign.video_tag, "https://vimeo.com/226053498"),
+                            (campaign.image_tag, "https://s3.amazonaws.com/creare-websites-wpms-legacy/wp-content/uploads/sites/32/2016/03/01200959/canstockphoto22402523-arcos-creator.com_-1024x1024.jpg"),
+                        ],
+                    )
+                });
 
             list.set_member_merge_field_batch(&token, values).await?;
         }
