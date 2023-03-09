@@ -5,9 +5,6 @@
         <title>Mailchimp list</title>
     </head>
     <body>
-        <button id="sync">Sync</button>
-        <div id="campaigns">
-        </div>
         <ul id="add-videos">
         </ul>
         <script>
@@ -55,7 +52,11 @@
                             });
                         };
                         
-                        add_btn.disabled = campaign.added;
+                        if (campaign.merge_tag != null) {
+                            add_btn.disabled = true;
+                            tag_elm.innerText = `Please use merge field tag "*|${campaign.merge_tag}|*" to embed the video`;
+                        }
+
                         c_elm.appendChild(add_btn);
 
                         c_elm.appendChild(tag_elm);
@@ -63,46 +64,6 @@
                         ADD_VIDEOS.appendChild(c_elm);
                     });
                 });
-
-                const CAMPAIGNS = document.getElementById("campaigns");
-
-                document.getElementById("sync").onclick = (evt) => {
-                    CAMPAIGNS.innerHTML = '';
-
-                    fetch("/sync", {
-                        method: "POST",
-                        headers: { "session-id": localStorage.getItem("session-id") },
-                    })
-                    .then((resp) => resp.json())
-                    .then((new_data) => {
-                        new_data.forEach(campaign => {
-                            let c_elm = document.createElement("div");
-
-                            let c_inner_elm = document.createElement("span");
-                            c_inner_elm.innerText = campaign.title;
-                            c_elm.append(c_inner_elm);
-
-                            if (campaign.new_members.length == 0) {
-                                let m_elm = document.createElement("div");
-                                m_elm.innerText = "No new emails";
-
-                                c_elm.append(m_elm);
-                            } else {
-                                let ul_elm = document.createElement("ul");
-                                c_elm.append(ul_elm);
-
-                                campaign.new_members.forEach(member => {
-                                    let m_elm = document.createElement("li");
-                                    m_elm.innerText = `${member.full_name}: ${member.email_address}`;
-                        
-                                    ul_elm.append(m_elm);
-                                });
-                            }
-                            
-                            CAMPAIGNS.append(c_elm);
-                        });
-                    });
-                };
             }
         </script>
     </body>

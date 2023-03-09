@@ -1,6 +1,8 @@
 mod mailchimp;
 mod session;
 
+use std::collections::HashMap;
+
 use mailchimp::campaign::MailChimpCampaigns;
 use session::Session;
 use worker::{Method, Request, Response};
@@ -71,7 +73,7 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
                 .await?
                 .campaigns;
             let existing_campaigns = session
-                .get_existing_campaigns_in(
+                .get_existing_campaign_merge_fields_in(
                     campaigns
                         .iter()
                         .map(|campaign| campaign.id.clone())
@@ -86,7 +88,7 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
                         "id": campaign.id,
                         "list_id": campaign.recipients.list_id,
                         "title": campaign.settings.title,
-                        "added": existing_campaigns.contains(&campaign.id)
+                        "merge_tag": existing_campaigns.get(&campaign.id)
                     })
                 })
                 .collect::<Vec<_>>();
@@ -116,22 +118,15 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
                 )
                 .await
         })
-        .post_async("/sync", |req, ctx| async move {
-            let session_id = req
-                .headers()
-                .get("session-id")?
-                .expect("Each request must embed the auth code");
-
-            let session = Session::try_from(&ctx.env)?;
-
-            session.sync(&session_id).await
+        .get_async(Session::WEBHOOK_CALLBACK, |_req, _ctx| async move {
+            Response::ok("Hello")
         })
         .post_async(
             "/populate_merge_fields/:campaign_id",
             |req, ctx| async move {
                 let Some(campaign_id) = ctx.param("campaign_id") else {
-                return Response::error("Missing list id", 400);
-            };
+                    return Response::error("Missing list id", 400);
+                };
                 let session_id = req
                     .headers()
                     .get("session-id")?
@@ -144,6 +139,47 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
                     .await
             },
         )
+        .post_async(Session::WEBHOOK_CALLBACK, |mut req, ctx| async move {
+            let req = req.bytes().await?;
+            let data: Vec<_> = form_urlencoded::parse(&req).collect();
+            let data: HashMap<_, _> = data.iter().map(|(key, value)| (&**key, &**value)).collect();
+
+            let Some(email_id) = data.get("data[email]") else {
+                return Response::error("Webhook call is missing data[email]", 400);
+            };
+            let Some(list_id) = data.get("data[list_id]") else {
+                return Response::error("Webhook call is missing data[list_id]", 400);
+            };
+            let Some(fname) = data.get("data[merges][FNAME]") else {
+                return Response::error("Webhook call is missing data[merges][FNAME]", 400);
+            };
+            let Some(lname) = data.get("data[merges][LNAME]") else {
+                return Response::error("Webhook call is missing data[merges][LNAME]", 400);
+            };
+
+            let session = Session::try_from(&ctx.env)?;
+            let token = session.access_token_from_list_id(*list_id).await?;
+
+            match data.get("type") {
+                // A new member subscribed
+                Some(&"subscribe") => {
+                    session
+                        .subscribe_member(&token, *email_id, format!("{fname} {lname}"), *list_id)
+                        .await?;
+
+                    Response::ok("added")
+                }
+                // A member's data has changed
+                Some(&"profile") => {
+                    session
+                        .update_member(&token, *email_id, &format!("{fname} {lname}"), *list_id)
+                        .await?;
+
+                    Response::ok("updated")
+                }
+                _ => Response::error("Unsupported type of webhook call", 400),
+            }
+        })
         .run(req, env)
         .await
 }

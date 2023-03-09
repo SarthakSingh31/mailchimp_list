@@ -156,12 +156,13 @@ impl List {
         let body = serde_json::json!({
             "url": url.as_ref(),
             "events": {
-                "subscribe": true
+                "subscribe": true,
+                "profile": true
             },
             "sources": {
                 "user": true,
                 "admin": true,
-                "api": true,
+                "api": true
             },
         });
 

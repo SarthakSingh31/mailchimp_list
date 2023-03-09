@@ -1,13 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 use worker::{wasm_bindgen::JsValue, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
-use crate::mailchimp::{
-    campaign::{MailChimpCampaign, MailChimpCampaigns},
-    lists::{List, Member},
-    Token,
-};
+use crate::mailchimp::{campaign::MailChimpCampaign, lists::List, Token};
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct User {
@@ -173,165 +169,37 @@ impl Session {
         }
     }
 
-    pub async fn sync(&self, session_id: impl Into<JsValue> + Copy) -> worker::Result<Response> {
-        let Some(user_id) = ({
-            #[derive(serde::Deserialize)]
-            struct UserSession {
-                #[serde(rename = "UserId")]
-                user_id: u64,
-            }
-
-            let mut user_sessions: Vec<UserSession> = self
-                .db
-                .prepare("SELECT UserId FROM UserSessions WHERE Id = ?")
-                .bind(&[session_id.into()])?
-                .all()
-                .await?
-                .results()?;
-
-            user_sessions.pop().map(|user_session| user_session.user_id)
-        }) else {
-            return Err(worker::Error::RustError("Failed to find a session for this session id".into()));
-        };
-
-        let user = self.get_user(user_id).await?;
-        let last_synced = user.last_synced.map(|t| {
-            time::OffsetDateTime::from_unix_timestamp(t)
-                .expect("Failed to convert timestamp to time")
-                .format(&time::format_description::well_known::Iso8601::DEFAULT)
-                .expect("Failed to format timestamp")
-        });
-
-        let token = self.access_token(session_id).await?;
-
-        #[derive(Debug, serde::Deserialize)]
-        struct DbCampaign {
-            #[serde(rename = "Id")]
-            id: String,
-            #[serde(rename = "Title")]
-            title: String,
-            #[serde(rename = "MemberListId")]
-            member_list_id: String,
-            #[serde(skip_deserializing)]
-            new: bool,
-        }
-        let mut db_campaigns: Vec<DbCampaign> = self
+    pub async fn access_token_from_list_id(
+        &self,
+        list_id: impl Into<JsValue>,
+    ) -> worker::Result<Token> {
+        let tokens = self
             .db
-            .prepare(format!(
-                "SELECT Id, Title, MemberListId FROM Campaigns WHERE UserId = {};",
-                user_id
-            ))
-            .bind(&[])?
+            .prepare("SELECT AccessToken, Dc FROM UserSessions WHERE UserId = (SELECT Id FROM Users WHERE Id = (SELECT UserId FROM Lists WHERE Id = ?));")
+            .bind(&[list_id.into()])?
             .all()
             .await?
-            .results()?;
+            .results::<Token>()?;
 
-        // Set the time of last sync at when we start syncing everything
-        self.db
-            .exec(
-                format!(
-                    "UPDATE Users SET LastSynced = {} WHERE Id = {};",
-                    time::OffsetDateTime::now_utc().unix_timestamp(),
-                    user_id
-                )
-                .as_str(),
-            )
-            .await?;
-
-        let new_mc_campagins = MailChimpCampaigns::get_all(&token, last_synced.as_ref())
-            .await?
-            .campaigns;
-
-        let mut mc_campaign_insert = Vec::default();
-
-        for mc_campaign in new_mc_campagins {
-            // TODO: Instead of ignoring this raise an error in the front end
-            if !mc_campaign.recipients.list_id.is_empty() {
-                mc_campaign_insert.push(format!(
-                    "('{}', '{}', '{}', {})",
-                    mc_campaign.id,
-                    mc_campaign.settings.title,
-                    mc_campaign.recipients.list_id,
-                    user_id,
-                ));
-
-                db_campaigns.push(DbCampaign {
-                    id: mc_campaign.id,
-                    title: mc_campaign.settings.title,
-                    member_list_id: mc_campaign.recipients.list_id,
-                    new: true,
-                });
-            }
+        if let Some(token) = tokens.first() {
+            Ok(token.clone())
+        } else {
+            Err(worker::Error::RustError(
+                "Failed to find a session for this list_id. This probably happened because a user session was deleted from the db".into(),
+            ))
         }
-
-        if mc_campaign_insert.len() > 0 {
-            self.db
-                .exec(
-                    format!(
-                        "INSERT INTO Campaigns VALUES {};",
-                        mc_campaign_insert.join(",")
-                    )
-                    .as_str(),
-                )
-                .await?;
-        }
-
-        #[derive(serde::Serialize)]
-        struct NewCampaignData {
-            title: String,
-            new_members: Vec<Member>,
-        }
-
-        let mut new_campaign_data = Vec::new();
-        let mut new_members_insert = Vec::new();
-
-        for db_campaign in &db_campaigns {
-            let last_synced = if db_campaign.new {
-                None
-            } else {
-                last_synced.as_ref()
-            };
-            let new_members = List(db_campaign.member_list_id.clone())
-                .fetch_members(&token, last_synced)
-                .await?
-                .members;
-
-            for member in &new_members {
-                new_members_insert.push(format!(
-                    "('{}', '{}', '{}')",
-                    member.email_address, member.full_name, db_campaign.id
-                ));
-            }
-
-            new_campaign_data.push(NewCampaignData {
-                title: db_campaign.title.clone(),
-                new_members,
-            });
-        }
-
-        if new_members_insert.len() > 0 {
-            self.db
-                .exec(
-                    format!(
-                        "INSERT INTO Members VALUES {};",
-                        new_members_insert.join(",")
-                    )
-                    .as_str(),
-                )
-                .await?;
-        }
-
-        Response::from_json(&new_campaign_data)
     }
 
-    pub async fn get_existing_campaigns_in(
+    pub async fn get_existing_campaign_merge_fields_in(
         &self,
         campaigns: HashSet<String>,
-    ) -> worker::Result<HashSet<String>> {
+    ) -> worker::Result<HashMap<String, String>> {
         #[derive(serde::Deserialize)]
         struct DbCampaign {
             #[serde(rename = "Id")]
             id: String,
+            #[serde(rename = "MergeTag")]
+            merge_tag: String,
         }
 
         let campaigns = campaigns
@@ -343,7 +211,7 @@ impl Session {
         Ok(self
             .db
             .prepare(format!(
-                "SELECT Id FROM Campaigns WHERE Id in ({});",
+                "SELECT Id, MergeTag FROM Campaigns WHERE Id in ({});",
                 campaigns
             ))
             .bind(&[])?
@@ -351,7 +219,7 @@ impl Session {
             .await?
             .results::<DbCampaign>()?
             .into_iter()
-            .map(|campaign| campaign.id)
+            .map(|campaign| (campaign.id, campaign.merge_tag))
             .collect())
     }
 
@@ -360,11 +228,12 @@ impl Session {
         &self,
         campaign: &MailChimpCampaign,
         session_id: impl Into<JsValue> + Copy,
+        merge_tag: impl Into<JsValue>,
     ) -> worker::Result<()> {
         #[derive(serde::Deserialize)]
         struct DbSession {
             #[serde(rename = "UserId")]
-            user_id: String,
+            user_id: u64,
         }
 
         let sessions = self
@@ -385,7 +254,7 @@ impl Session {
             .bind(&[campaign.recipients.list_id.as_str().into()])?
             .all()
             .await?
-            .results::<Vec<Value>>()?
+            .results::<Value>()?
             .first()
             .is_none()
         {
@@ -395,7 +264,10 @@ impl Session {
                 .await?;
 
             self.db
-                .prepare("INSERT INTO Lists VALUES (?, ?);")
+                .prepare(format!(
+                    "INSERT INTO Lists VALUES (?, {}, ?);",
+                    session.user_id
+                ))
                 .bind(&[
                     campaign.recipients.list_id.as_str().into(),
                     webhook_id.as_str().into(),
@@ -425,12 +297,15 @@ impl Session {
 
         // Populate the campaign table if it did not exist
         self.db
-            .prepare("INSERT INTO Campaigns VALUES (?, ?, ?, ?);")
+            .prepare(format!(
+                "INSERT INTO Campaigns VALUES (?, ?, ?, {}, ?);",
+                session.user_id
+            ))
             .bind(&[
                 campaign.id.as_str().into(),
                 campaign.settings.title.as_str().into(),
                 campaign.recipients.list_id.as_str().into(),
-                session.user_id.as_str().into(),
+                merge_tag.into(),
             ])?
             .all()
             .await?;
@@ -446,12 +321,12 @@ impl Session {
         let token = self.access_token(session_id).await?;
 
         let campaign = MailChimpCampaign::get(&token, campaign_id).await?;
+        let list = List(campaign.recipients.list_id.clone());
 
-        self.add_campaign_to_table(&campaign, session_id).await?;
-
-        let list = List(campaign.recipients.list_id);
         let merge_field = list
             .get_or_add_merge_field(&token, &format!("Video/{}", campaign.id))
+            .await?;
+        self.add_campaign_to_table(&campaign, session_id, &merge_field.tag)
             .await?;
 
         let values = list
@@ -471,6 +346,98 @@ impl Session {
         Response::from_json(&serde_json::json!({
             "tag": merge_field.tag,
         }))
+    }
+
+    pub async fn subscribe_member(
+        &self,
+        token: &Token,
+        email: &str,
+        name: impl Into<JsValue>,
+        list_id: &str,
+    ) -> worker::Result<()> {
+        self.db
+            .prepare("INSERT INTO Members VALUES (?, ?, ?);")
+            .bind(&[email.into(), name.into(), list_id.into()])?
+            .all()
+            .await?;
+
+        #[derive(serde::Deserialize)]
+        struct DbCampaign {
+            #[serde(rename = "MergeTag")]
+            merge_tag: String,
+        }
+
+        let list = List(list_id.to_owned());
+
+        let values = self
+            .db
+            .prepare("SELECT MergeTag FROM Campaigns WHERE ListId = ?;")
+            .bind(&[list_id.into()])?
+            .all()
+            .await?
+            .results::<DbCampaign>()?
+            .into_iter()
+            .map(|campaign| (campaign.merge_tag, email, "https://vimeo.com/226053498"));
+
+        list.set_member_merge_field_batch(&token, values).await?;
+
+        Ok(())
+    }
+
+    pub async fn update_member(
+        &self,
+        token: &Token,
+        email: &str,
+        name: &str,
+        list_id: &str,
+    ) -> worker::Result<()> {
+        #[derive(serde::Deserialize)]
+        struct DbMember {
+            #[serde(rename = "FullName")]
+            name: String,
+        }
+
+        let members = self
+            .db
+            .prepare("SELECT FullName FROM Members WHERE EmailId = ?;")
+            .bind(&[email.into()])?
+            .all()
+            .await?
+            .results::<DbMember>()?;
+
+        let Some(member) = members.first() else {
+            return Err(worker::Error::RustError("Failed to find the user will email id".into()));
+        };
+
+        let list = List(list_id.to_owned());
+
+        #[derive(serde::Deserialize)]
+        struct DbCampaign {
+            #[serde(rename = "MergeTag")]
+            merge_tag: String,
+        }
+
+        if member.name != name {
+            self.db
+                .prepare("UPDATE Members SET FullName = ? WHERE  EmailId = ?;")
+                .bind(&[name.into(), email.into()])?
+                .all()
+                .await?;
+
+            let values = self
+                .db
+                .prepare("SELECT MergeTag FROM Campaigns WHERE ListId = ?;")
+                .bind(&[list_id.into()])?
+                .all()
+                .await?
+                .results::<DbCampaign>()?
+                .into_iter()
+                .map(|campaign| (campaign.merge_tag, email, "https://vimeo.com/226053498"));
+
+            list.set_member_merge_field_batch(&token, values).await?;
+        }
+
+        Ok(())
     }
 
     async fn get_user(&self, user_id: impl std::fmt::Display) -> worker::Result<User> {
