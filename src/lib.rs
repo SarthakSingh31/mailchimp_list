@@ -1,6 +1,7 @@
 mod mailchimp;
 mod session;
 
+use mailchimp::campaign::MailChimpCampaigns;
 use session::Session;
 use worker::{Method, Request, Response};
 
@@ -66,7 +67,33 @@ async fn main(req: Request, env: worker::Env, _ctx: worker::Context) -> worker::
             let session = Session::try_from(&ctx.env)?;
             let token = session.access_token(session_id).await?;
 
-            token.fetch("campaigns", [], Method::Get, None).await
+            let campaigns = MailChimpCampaigns::get_all(&token, Option::<&str>::None)
+                .await?
+                .campaigns;
+            let existing_campaigns = session
+                .get_existing_campaigns_in(
+                    campaigns
+                        .iter()
+                        .map(|campaign| campaign.id.clone())
+                        .collect(),
+                )
+                .await?;
+
+            let campaigns = campaigns
+                .into_iter()
+                .map(|campaign| {
+                    serde_json::json!({
+                        "id": campaign.id,
+                        "list_id": campaign.recipients.list_id,
+                        "title": campaign.settings.title,
+                        "added": existing_campaigns.contains(&campaign.id)
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            Response::from_json(&serde_json::json!({
+                "campaigns": campaigns,
+            }))
         })
         .get_async("/get_members/:list_id", |req, ctx| async move {
             let Some(list_id) = ctx.param("list_id") else {

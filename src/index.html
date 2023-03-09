@@ -34,7 +34,7 @@
                         let c_elm = document.createElement("li");
 
                         let span_elm = document.createElement("span");
-                        span_elm.innerText = campaign.settings.title;
+                        span_elm.innerText = campaign.title;
                         c_elm.appendChild(span_elm);
 
                         let tag_elm = document.createElement("span");
@@ -50,9 +50,12 @@
                             })
                             .then((resp) => resp.json())
                             .then((data) => {
+                                add_btn.disabled = true;
                                 tag_elm.innerText = `Please use merge field tag "*|${data.tag}|*" to embed the video`;
                             });
                         };
+                        
+                        add_btn.disabled = campaign.added;
                         c_elm.appendChild(add_btn);
 
                         c_elm.appendChild(tag_elm);

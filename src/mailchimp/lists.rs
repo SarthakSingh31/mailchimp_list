@@ -147,6 +147,42 @@ impl List {
 
         Ok(())
     }
+
+    pub async fn install_webhook(
+        &self,
+        token: &Token,
+        url: impl AsRef<str>,
+    ) -> worker::Result<String> {
+        let body = serde_json::json!({
+            "url": url.as_ref(),
+            "events": {
+                "subscribe": true
+            },
+            "sources": {
+                "user": true,
+                "admin": true,
+                "api": true,
+            },
+        });
+
+        #[derive(serde::Deserialize)]
+        struct Webhook {
+            id: String,
+        }
+
+        let webhook: Webhook = token
+            .fetch(
+                format!("lists/{}/webhooks", self.0).as_str(),
+                [],
+                Method::Post,
+                Some(body.to_string().into()),
+            )
+            .await?
+            .json()
+            .await?;
+
+        Ok(webhook.id)
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]

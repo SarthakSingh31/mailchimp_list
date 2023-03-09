@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+
+use serde_json::Value;
 use worker::{wasm_bindgen::JsValue, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
 use crate::mailchimp::{
@@ -22,12 +25,14 @@ pub struct Session {
     db: worker::D1Database,
     client_id: String,
     client_secret: String,
+    webhook_uri: url::Url,
     redirect_uri: url::Url,
 }
 
 impl Session {
     pub const BINDING: &'static str = "MailchimpDB";
     pub const AUTH_CALLBACK: &'static str = "/auth/token";
+    pub const WEBHOOK_CALLBACK: &'static str = "/webhook";
     const AUTH_URL: &'static str = "https://login.mailchimp.com/oauth2/";
     const TOKEN_URL: &'static str = "https://login.mailchimp.com/oauth2/token";
     const METADATA_URL: &'static str = "https://login.mailchimp.com/oauth2/metadata";
@@ -113,7 +118,7 @@ impl Session {
         if let Err(_) = self.get_user(metadata.user_id).await {
             self.db
                 .prepare(format!(
-                    "INSERT INTO Users VALUES ({}, ?, ?, NULL);",
+                    "INSERT INTO Users VALUES ({}, ?, ?);",
                     metadata.user_id
                 ))
                 .bind(&[metadata.accountname.into(), metadata.login.email.into()])?
@@ -319,14 +324,130 @@ impl Session {
         Response::from_json(&new_campaign_data)
     }
 
+    pub async fn get_existing_campaigns_in(
+        &self,
+        campaigns: HashSet<String>,
+    ) -> worker::Result<HashSet<String>> {
+        #[derive(serde::Deserialize)]
+        struct DbCampaign {
+            #[serde(rename = "Id")]
+            id: String,
+        }
+
+        let campaigns = campaigns
+            .into_iter()
+            .map(|campaign| format!("'{}'", campaign))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        Ok(self
+            .db
+            .prepare(format!(
+                "SELECT Id FROM Campaigns WHERE Id in ({});",
+                campaigns
+            ))
+            .bind(&[])?
+            .all()
+            .await?
+            .results::<DbCampaign>()?
+            .into_iter()
+            .map(|campaign| campaign.id)
+            .collect())
+    }
+
+    /// Adds a campaign to the
+    pub async fn add_campaign_to_table(
+        &self,
+        campaign: &MailChimpCampaign,
+        session_id: impl Into<JsValue> + Copy,
+    ) -> worker::Result<()> {
+        #[derive(serde::Deserialize)]
+        struct DbSession {
+            #[serde(rename = "UserId")]
+            user_id: String,
+        }
+
+        let sessions = self
+            .db
+            .prepare("SELECT UserId FROM UserSessions WHERE Id = ?;")
+            .bind(&[session_id.into()])?
+            .all()
+            .await?
+            .results::<DbSession>()?;
+        let session = sessions.first().expect("Failed to find session");
+
+        let token = self.access_token(session_id).await?;
+
+        // Populate the lists table if it did not exist
+        if self
+            .db
+            .prepare("SELECT * FROM Lists WHERE Id = ?;")
+            .bind(&[campaign.recipients.list_id.as_str().into()])?
+            .all()
+            .await?
+            .results::<Vec<Value>>()?
+            .first()
+            .is_none()
+        {
+            let list = List(campaign.recipients.list_id.clone());
+            let webhook_id = list
+                .install_webhook(&token, self.webhook_uri.as_str())
+                .await?;
+
+            self.db
+                .prepare("INSERT INTO Lists VALUES (?, ?);")
+                .bind(&[
+                    campaign.recipients.list_id.as_str().into(),
+                    webhook_id.as_str().into(),
+                ])?
+                .all()
+                .await?;
+            let members = list
+                .fetch_members(&token, Option::<&str>::None)
+                .await?
+                .members
+                .into_iter()
+                .map(|member| {
+                    format!(
+                        "('{}', '{}', '{}')",
+                        member.email_address, member.full_name, campaign.recipients.list_id
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+
+            if !members.is_empty() {
+                self.db
+                    .exec(format!("INSERT INTO Members VALUES {};", members).as_str())
+                    .await?;
+            }
+        }
+
+        // Populate the campaign table if it did not exist
+        self.db
+            .prepare("INSERT INTO Campaigns VALUES (?, ?, ?, ?);")
+            .bind(&[
+                campaign.id.as_str().into(),
+                campaign.settings.title.as_str().into(),
+                campaign.recipients.list_id.as_str().into(),
+                session.user_id.as_str().into(),
+            ])?
+            .all()
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn populate_merge_fields(
         &self,
-        session_id: impl Into<JsValue>,
+        session_id: impl Into<JsValue> + Copy,
         campaign_id: &str,
     ) -> worker::Result<Response> {
         let token = self.access_token(session_id).await?;
 
         let campaign = MailChimpCampaign::get(&token, campaign_id).await?;
+
+        self.add_campaign_to_table(&campaign, session_id).await?;
 
         let list = List(campaign.recipients.list_id);
         let merge_field = list
@@ -384,6 +505,16 @@ impl Session {
             .join(Self::AUTH_CALLBACK)
             .expect("Failed to join the token endpoint")
     }
+
+    fn webhook_uri_from_env(env: &Env) -> url::Url {
+        env.secret("MAILCHIMP_BASE_URI")
+            .expect("Failed to find MAILCHIMP_BASE_URI secret")
+            .to_string()
+            .parse::<url::Url>()
+            .expect("MAILCHIMP_BASE_URI is not a valid uri")
+            .join(Self::WEBHOOK_CALLBACK)
+            .expect("Failed to join the token endpoint")
+    }
 }
 
 impl TryFrom<&Env> for Session {
@@ -394,6 +525,7 @@ impl TryFrom<&Env> for Session {
             db: env.d1(Self::BINDING)?,
             client_id: Self::client_id_from_env(&env),
             client_secret: Self::client_secret_from_env(&env),
+            webhook_uri: Self::webhook_uri_from_env(&env),
             redirect_uri: Self::redirect_uri_from_env(&env),
         })
     }
