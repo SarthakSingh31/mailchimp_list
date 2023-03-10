@@ -345,8 +345,8 @@ impl Session {
                 (
                     member.email_address,
                     vec![
-                        (&video_field.tag, "https://vimeo.com/226053498"),
-                        (&image_field.tag, "https://s3.amazonaws.com/creare-websites-wpms-legacy/wp-content/uploads/sites/32/2016/03/01200959/canstockphoto22402523-arcos-creator.com_-1024x1024.jpg"),
+                        (&video_field.tag, "vimeo.com/226053498"),
+                        (&image_field.tag, "s3.amazonaws.com/creare-websites-wpms-legacy/wp-content/uploads/sites/32/2016/03/01200959/canstockphoto22402523-arcos-creator.com_-1024x1024.jpg"),
                     ],
                 )
             });
@@ -393,8 +393,8 @@ impl Session {
                 (
                     email,
                     vec![
-                        (campaign.video_tag, "https://vimeo.com/226053498"),
-                        (campaign.image_tag, "https://s3.amazonaws.com/creare-websites-wpms-legacy/wp-content/uploads/sites/32/2016/03/01200959/canstockphoto22402523-arcos-creator.com_-1024x1024.jpg"),
+                        (campaign.video_tag, "vimeo.com/226053498"),
+                        (campaign.image_tag, "s3.amazonaws.com/creare-websites-wpms-legacy/wp-content/uploads/sites/32/2016/03/01200959/canstockphoto22402523-arcos-creator.com_-1024x1024.jpg"),
                     ],
                 )
             });
@@ -458,8 +458,8 @@ impl Session {
                     (
                         email,
                         vec![
-                            (campaign.video_tag, "https://vimeo.com/226053498"),
-                            (campaign.image_tag, "https://s3.amazonaws.com/creare-websites-wpms-legacy/wp-content/uploads/sites/32/2016/03/01200959/canstockphoto22402523-arcos-creator.com_-1024x1024.jpg"),
+                            (campaign.video_tag, "vimeo.com/226053498"),
+                            (campaign.image_tag, "s3.amazonaws.com/creare-websites-wpms-legacy/wp-content/uploads/sites/32/2016/03/01200959/canstockphoto22402523-arcos-creator.com_-1024x1024.jpg"),
                         ],
                     )
                 });

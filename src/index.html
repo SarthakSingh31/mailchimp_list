@@ -53,7 +53,7 @@
                                 tag_span_elm.innerText = "Please embed the following html code to embed the link to the video:";
                                 tag_elm.appendChild(tag_span_elm);
                                 let tag_div_elm = document.createElement("div");
-                                tag_div_elm.innerText = `<a href="*|${data.video_tag}|*"><img src="*|${data.image_tag}|*"></a>`;
+                                tag_div_elm.innerText = `<a href="https://*|${data.video_tag}|*"><img src="https://*|${data.image_tag}|*"></a>`;
                                 tag_elm.appendChild(tag_div_elm);
                             });
                         };
@@ -65,7 +65,7 @@
                             tag_span_elm.innerText = "Please embed the following html code to embed the link to the video:";
                             tag_elm.appendChild(tag_span_elm);
                             let tag_div_elm = document.createElement("div");
-                            tag_div_elm.innerText = `<a href="*|${campaign.merge_tags.video_tag}|*"><img src="*|${campaign.merge_tags.image_tag}|*"></a>`;
+                            tag_div_elm.innerText = `<a href="https://*|${campaign.merge_tags.video_tag}|*"><img src="https://*|${campaign.merge_tags.image_tag}|*"></a>`;
                             tag_elm.appendChild(tag_div_elm);
                         }
 

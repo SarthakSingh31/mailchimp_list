@@ -90,7 +90,7 @@ impl List {
 
         let body = serde_json::json!({
             "name": name.as_ref(),
-            "type": "url",
+            "type": "text",
             "tag": name.as_ref(),
             "required": false,
             "public": false,
